@@ -1,0 +1,43 @@
+name: Security - SAST
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        required: false
+        type: string
+        default: "3.11"
+  workflow_dispatch:
+
+jobs:
+  sast:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install linting tools
+        run: pip install bandit pylint
+
+      - name: Run Bandit
+        run: bandit -r . -f json -o bandit-report.json || true
+
+      - name: Show Bandit report
+        run: |
+          if [ -f bandit-report.json ]; then
+            cat bandit-report.json
+          fi
+
+      - name: Run Pylint
+        run: pylint app.py --exit-zero || true
