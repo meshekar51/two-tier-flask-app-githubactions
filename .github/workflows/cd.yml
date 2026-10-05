@@ -1,0 +1,268 @@
+# CD: push to main/master (or a v*.*.* tag) -> CI gates -> push image -> helm deploy -> helm test.
+#
+#   ci (reusable ci.yml) -> build-push (Docker Hub) -> deploy (Helm, "production" environment) -> notify (optional email)
+#
+# Replaces the Jenkins stages: Push to Docker Hub, Deploy, and the post{} email.
+# Setup (secrets / variables / AWS OIDC role): see README.md -> "CI/CD with GitHub Actions + Helm".
+
+name: CD
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*.*.*"]
+    paths-ignore: # path filters are ignored for tag pushes
+      - "**.md"
+      - "aws/**"
+      - ".github/dependabot.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deployment at a time per ref; queued runs wait instead of being cancelled.
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CHART_DIR: helm/two-tier-flask-app
+  HELM_VERSION: v4.3.0
+  IMAGE_NAME: docker.io/${{ vars.DOCKERHUB_USERNAME }}/two-tier-flask-app
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  build-push:
+    name: Build & push image
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Check registry settings
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          [[ -n "$DOCKERHUB_USERNAME" ]] || { echo "::error::Repository variable DOCKERHUB_USERNAME is not set"; exit 1; }
+          [[ -n "$DOCKERHUB_TOKEN" ]]    || { echo "::error::Repository secret DOCKERHUB_TOKEN is not set"; exit 1; }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Immutable deploy tag
+        id: vars
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Image tags & OCI labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=${{ steps.vars.outputs.tag }}
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build & push
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=two-tier-flask-app
+          cache-to: type=gha,mode=max,scope=two-tier-flask-app
+          provenance: mode=max
+          sbom: true
+
+      - name: Summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Image pushed"
+            echo "Digest: \`$DIGEST\`"
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy with Helm
+    needs: build-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Add "Required reviewers" to this environment for a manual approval gate.
+    environment:
+      name: production
+    permissions:
+      contents: read
+      id-token: write # GitHub OIDC -> AWS IAM role (no static AWS keys)
+    env:
+      CLUSTER_TYPE: ${{ vars.CLUSTER_TYPE || 'eks' }} # eks | kubeconfig
+      RELEASE_NAME: ${{ vars.HELM_RELEASE || 'two-tier-flask-app' }}
+      NAMESPACE: ${{ vars.K8S_NAMESPACE || 'two-tier' }}
+      VALUES_FILE: ${{ vars.HELM_VALUES_FILE || 'values-eks.yaml' }}
+      IMAGE_TAG: ${{ needs.build-push.outputs.tag }}
+      IMAGE_DIGEST: ${{ needs.build-push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      # ---- Cluster access: Amazon EKS via OIDC --------------------------------
+      - name: Configure AWS credentials (OIDC)
+        if: env.CLUSTER_TYPE == 'eks'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: gha-${{ github.event.repository.name }}-${{ github.run_id }}
+
+      - name: Kubeconfig for EKS
+        if: env.CLUSTER_TYPE == 'eks'
+        env:
+          EKS_CLUSTER_NAME: ${{ vars.EKS_CLUSTER_NAME }}
+        run: aws eks update-kubeconfig --name "$EKS_CLUSTER_NAME" --region "$AWS_REGION"
+
+      # ---- Cluster access: any other cluster (kubeadm, k3s, AKS, GKE...) -----
+      - name: Kubeconfig from secret
+        if: env.CLUSTER_TYPE == 'kubeconfig'
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
+        run: |
+          [[ -n "$KUBE_CONFIG" ]] || { echo "::error::Secret KUBE_CONFIG is not set"; exit 1; }
+          mkdir -p ~/.kube
+          printf '%s\n' "$KUBE_CONFIG" > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Check cluster access
+        run: |
+          kubectl version
+          kubectl auth can-i create deployments --namespace "$NAMESPACE"
+
+      - name: Namespace, DB credentials and deploy values
+        env:
+          MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+          MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
+
+          # Image built by this run, pinned by digest.
+          cat > "$RUNNER_TEMP/deploy-values.yaml" <<EOF
+          image:
+            repository: ${IMAGE_NAME}
+            tag: ${IMAGE_TAG}
+            digest: ${IMAGE_DIGEST}
+          EOF
+
+          # Optional: DB passwords from GitHub secrets. Without them the chart
+          # generates random passwords once and keeps them across upgrades.
+          if [[ -n "$MYSQL_PASSWORD" && -n "$MYSQL_ROOT_PASSWORD" ]]; then
+            secret="${RELEASE_NAME}-db-credentials"
+            kubectl -n "$NAMESPACE" create secret generic "$secret" \
+              --from-literal=mysql-password="$MYSQL_PASSWORD" \
+              --from-literal=mysql-root-password="$MYSQL_ROOT_PASSWORD" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            printf 'mysql:\n  auth:\n    existingSecret: %s\n' "$secret" >> "$RUNNER_TEMP/deploy-values.yaml"
+          else
+            echo "::notice::MYSQL_PASSWORD / MYSQL_ROOT_PASSWORD not set - using chart-generated DB passwords."
+          fi
+          cat "$RUNNER_TEMP/deploy-values.yaml"
+
+      - name: helm upgrade --install
+        id: upgrade
+        run: |
+          helm upgrade --install "$RELEASE_NAME" "$CHART_DIR" \
+            --namespace "$NAMESPACE" \
+            -f "$CHART_DIR/$VALUES_FILE" \
+            -f "$RUNNER_TEMP/deploy-values.yaml" \
+            --rollback-on-failure --wait=watcher --timeout 10m \
+            --history-max 10
+
+      - name: helm test (smoke test)
+        run: helm test "$RELEASE_NAME" --namespace "$NAMESPACE" --logs --timeout 5m
+
+      - name: Roll back if the smoke test failed
+        if: failure() && steps.upgrade.outcome == 'success'
+        run: |
+          if [[ $(helm history "$RELEASE_NAME" -n "$NAMESPACE" -o json | jq length) -gt 1 ]]; then
+            helm rollback "$RELEASE_NAME" --namespace "$NAMESPACE" --wait=watcher --timeout 5m
+            echo "::warning::Smoke test failed - rolled back to the previous release."
+          else
+            echo "::warning::Smoke test failed on the first install - nothing to roll back to."
+          fi
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          helm status "$RELEASE_NAME" -n "$NAMESPACE" || true
+          kubectl -n "$NAMESPACE" get all,pvc -o wide || true
+          kubectl -n "$NAMESPACE" describe pods || true
+          kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp | tail -40 || true
+
+      - name: Summary
+        run: |
+          {
+            echo "### Deployed \`$RELEASE_NAME\` to namespace \`$NAMESPACE\` ($CLUSTER_TYPE)"
+            echo "Image: \`$IMAGE_NAME:$IMAGE_TAG@$IMAGE_DIGEST\`"
+            echo '```'
+            kubectl -n "$NAMESPACE" get deploy,sts,svc -l "app.kubernetes.io/instance=$RELEASE_NAME" -o wide
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Equivalent of the Jenkins post{} emailext. Runs only when the NOTIFY_EMAIL variable is set.
+  # (GitHub already emails the person who triggered a failed run by default.)
+  notify:
+    name: Email notification
+    needs: [ci, build-push, deploy]
+    if: always() && vars.NOTIFY_EMAIL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: dawidd6/action-send-mail@67ce3558d613188179559c61d3565140cf389968 # v22
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ vars.SMTP_PORT || '465' }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          from: GitHub Actions <${{ secrets.SMTP_USERNAME }}>
+          to: ${{ vars.NOTIFY_EMAIL }}
+          subject: "[${{ github.repository }}] CD ${{ needs.deploy.result == 'success' && 'succeeded' || 'FAILED' }} on ${{ github.ref_name }}"
+          body: |
+            Repository : ${{ github.repository }}
+            Ref        : ${{ github.ref_name }} (${{ github.sha }})
+            Triggered  : ${{ github.actor }}
+
+            CI         : ${{ needs.ci.result }}
+            Build/push : ${{ needs.build-push.result }}
+            Deploy     : ${{ needs.deploy.result }}
+
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
