@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "twotier.fullname" . }}
+  labels:
+    {{- include "twotier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+  {{- with .Values.flask.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.flask.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.flask.service.port }}
+      targetPort: http
+      protocol: TCP
+      {{- if and (eq .Values.flask.service.type "NodePort") .Values.flask.service.nodePort }}
+      nodePort: {{ .Values.flask.service.nodePort }}
+      {{- end }}
+  {{- if and (eq .Values.flask.service.type "LoadBalancer") .Values.flask.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml .Values.flask.service.loadBalancerSourceRanges | nindent 4 }}
+  {{- end }}
+  selector:
+    {{- include "twotier.flask.selectorLabels" . | nindent 4 }}

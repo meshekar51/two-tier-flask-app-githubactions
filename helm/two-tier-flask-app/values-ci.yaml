@@ -1,0 +1,29 @@
+# Used by the CI end-to-end job: image is built in the runner and loaded
+# straight into the kind cluster, so it is never pulled from a registry.
+
+image:
+  repository: two-tier-flask-app
+  tag: ci
+  pullPolicy: Never
+
+flask:
+  replicaCount: 2
+
+mysql:
+  persistence:
+    enabled: true
+    storageClass: "" # kind ships a default "standard" (local-path) class
+    size: 1Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+networkPolicy:
+  enabled: true
+
+tests:
+  enabled: true
+  writeCheck: true # full round trip: POST /submit, then read it back from MySQL

@@ -1,0 +1,23 @@
+{{- if .Values.flask.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "twotier.fullname" . }}
+  labels:
+    {{- include "twotier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "twotier.fullname" . }}
+  minReplicas: {{ .Values.flask.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.flask.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.flask.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

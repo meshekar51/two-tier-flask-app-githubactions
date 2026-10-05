@@ -1,0 +1,46 @@
+# Amazon EKS (replaces the old eks-manifests/).
+#   helm upgrade --install two-tier-flask-app helm/two-tier-flask-app \
+#     -n two-tier --create-namespace -f helm/two-tier-flask-app/values-eks.yaml
+# App URL: kubectl -n two-tier get svc two-tier-flask-app -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+
+flask:
+  replicaCount: 2
+  service:
+    type: LoadBalancer
+    port: 80
+    annotations: {}
+    # With the AWS Load Balancer Controller installed, use an NLB instead of a CLB:
+    #   service.beta.kubernetes.io/aws-load-balancer-type: external
+    #   service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    #   service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  # Spread web pods across AZs (labelSelector is filled in by the chart).
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+
+mysql:
+  persistence:
+    enabled: true
+    # gp2 exists on every EKS cluster; switch to your gp3 class if you created one.
+    # Either way the Amazon EBS CSI driver add-on must be installed.
+    storageClass: gp2
+    size: 5Gi
+
+networkPolicy:
+  # EKS VPC CNI enforces NetworkPolicy once enableNetworkPolicy=true is set on the add-on.
+  enabled: true
+
+# --- Using Amazon RDS instead of the in-cluster MySQL -----------------------
+# mysql:
+#   enabled: false
+#   auth:
+#     database: devops
+#     username: admin
+#     existingSecret: two-tier-db-credentials   # key: mysql-password
+# externalDatabase:
+#   host: mydb.xxxxxxxx.eu-west-1.rds.amazonaws.com
+#   port: 3306

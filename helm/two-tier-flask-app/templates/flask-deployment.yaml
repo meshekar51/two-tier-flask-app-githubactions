@@ -1,0 +1,142 @@
+{{- include "twotier.validate" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "twotier.fullname" . }}
+  labels:
+    {{- include "twotier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: web
+spec:
+  {{- if not .Values.flask.autoscaling.enabled }}
+  replicas: {{ .Values.flask.replicaCount }}
+  {{- end }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "twotier.flask.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "twotier.flask.selectorLabels" . | nindent 8 }}
+        {{- with .Values.flask.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.flask.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "twotier.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.flask.podSecurityContext | nindent 8 }}
+      {{- if .Values.flask.waitForDatabase }}
+      initContainers:
+        - name: wait-for-db
+          image: {{ include "twotier.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # Reuses the app image (it already has Python), so no extra image to pull or scan.
+          command:
+            - python
+            - -c
+            - |
+              import os, socket, time
+              host, port = os.environ["MYSQL_HOST"], int(os.environ["MYSQL_PORT"])
+              while True:
+                  try:
+                      socket.create_connection((host, port), timeout=2).close()
+                      print(f"{host}:{port} is accepting connections", flush=True)
+                      break
+                  except OSError as err:
+                      print(f"waiting for {host}:{port} ({err})", flush=True)
+                      time.sleep(3)
+          env:
+            {{- include "twotier.db.env" . | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.flask.securityContext | nindent 12 }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+      {{- end }}
+      containers:
+        - name: flask
+          image: {{ include "twotier.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.flask.containerPort }}
+              protocol: TCP
+          env:
+            {{- include "twotier.db.env" . | nindent 12 }}
+            - name: MYSQL_USER
+              value: {{ .Values.mysql.auth.username | quote }}
+            - name: MYSQL_DB
+              value: {{ .Values.mysql.auth.database | quote }}
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "twotier.secretName" . }}
+                  key: mysql-password
+            # Root filesystem is read-only: keep gunicorn's control socket and Python bytecode off it.
+            - name: XDG_RUNTIME_DIR
+              value: /tmp
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            {{- with .Values.flask.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.flask.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.flask.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.flask.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.flask.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+      {{- with .Values.flask.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.flask.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.flask.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.flask.topologySpreadConstraints }}
+      {{- $constraints := list }}
+      {{- range . }}
+      {{- $tsc := deepCopy . }}
+      {{- if not $tsc.labelSelector }}
+      {{- $_ := set $tsc "labelSelector" (dict "matchLabels" (include "twotier.flask.selectorLabels" $ | fromYaml)) }}
+      {{- end }}
+      {{- $constraints = append $constraints $tsc }}
+      {{- end }}
+      topologySpreadConstraints:
+        {{- toYaml $constraints | nindent 8 }}
+      {{- end }}

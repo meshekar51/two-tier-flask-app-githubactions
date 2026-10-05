@@ -1,0 +1,30 @@
+{{ .Chart.Name }} {{ .Chart.Version }} deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Image : {{ include "twotier.image" . }}
+DB    : {{ include "twotier.db.host" . }}:{{ include "twotier.db.port" . }} (database "{{ .Values.mysql.auth.database }}", user "{{ .Values.mysql.auth.username }}")
+
+Open the app:
+{{- if .Values.flask.ingress.enabled }}
+{{- range .Values.flask.ingress.hosts }}
+  http{{ if $.Values.flask.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else if eq .Values.flask.service.type "NodePort" }}
+  NODE_PORT=$(kubectl -n {{ .Release.Namespace }} get svc {{ include "twotier.fullname" . }} -o jsonpath='{.spec.ports[0].nodePort}')
+  NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+  echo "http://$NODE_IP:$NODE_PORT"
+{{- else if eq .Values.flask.service.type "LoadBalancer" }}
+  The load balancer can take a few minutes to get an address:
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "twotier.fullname" . }} -w
+  echo "http://$(kubectl -n {{ .Release.Namespace }} get svc {{ include "twotier.fullname" . }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}')"
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "twotier.fullname" . }} 8080:{{ .Values.flask.service.port }}
+  then browse http://localhost:8080
+{{- end }}
+
+Smoke test:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }} --logs
+{{- if and .Values.mysql.enabled (not .Values.mysql.auth.existingSecret) }}
+
+DB passwords are in Secret "{{ include "twotier.secretName" . }}":
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "twotier.secretName" . }} -o jsonpath='{.data.mysql-password}' | base64 -d
+{{- end }}

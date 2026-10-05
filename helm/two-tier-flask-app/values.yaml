@@ -1,0 +1,218 @@
+# Default values for two-tier-flask-app.
+# Environment overlays live next to this file:
+#   values-kubeadm.yaml  -> self-managed kubeadm cluster (NodePort 30004 + hostPath PV)
+#   values-eks.yaml      -> Amazon EKS (LoadBalancer + EBS volume)
+#   values-ci.yaml       -> kind cluster used by the CI end-to-end job
+
+nameOverride: ""
+fullnameOverride: ""
+
+# ---------------------------------------------------------------------------
+# Web tier image (Flask + gunicorn)
+# ---------------------------------------------------------------------------
+image:
+  repository: trainwithshubham/two-tier-flask-app
+  # Empty -> .Chart.AppVersion. The CD workflow sets tag=sha-<commit> and the digest.
+  tag: ""
+  # Optional sha256 digest. When set the image is pinned as repo:tag@digest.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # The app never talks to the Kubernetes API, so no token is mounted.
+  automount: false
+
+# ---------------------------------------------------------------------------
+# Web tier (Flask)
+# ---------------------------------------------------------------------------
+flask:
+  replicaCount: 2
+  containerPort: 5000
+
+  # Init container that blocks until the MySQL port accepts connections,
+  # so the first request never hits a database that is still starting.
+  waitForDatabase: true
+
+  podAnnotations: {}
+  podLabels: {}
+
+  # Extra env vars, e.g. [{name: FLASK_DEBUG, value: "0"}]
+  extraEnv: []
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+  # /health never touches the DB, so a DB blip does not take every pod out of rotation.
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    timeoutSeconds: 3
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    fsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop: ["ALL"]
+
+  service:
+    type: ClusterIP # ClusterIP | NodePort | LoadBalancer
+    port: 80
+    nodePort: "" # only used when type=NodePort (30000-32767)
+    annotations: {}
+    loadBalancerSourceRanges: []
+
+  ingress:
+    enabled: false
+    className: ""
+    annotations: {}
+    hosts:
+      - host: two-tier.local
+        paths:
+          - path: /
+            pathType: Prefix
+    tls: []
+    #  - secretName: two-tier-tls
+    #    hosts: [two-tier.local]
+
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+
+# ---------------------------------------------------------------------------
+# Data tier (MySQL). Set mysql.enabled=false to use externalDatabase (e.g. RDS).
+# ---------------------------------------------------------------------------
+mysql:
+  enabled: true
+
+  image:
+    repository: mysql
+    tag: "8.4"
+    pullPolicy: IfNotPresent
+
+  auth:
+    database: devops
+    # Application user. Must not be "root" (the mysql image refuses it).
+    username: admin
+    # Leave both empty to have the chart generate random passwords once and
+    # keep them across upgrades. NOTE: MySQL only reads these on first boot of
+    # an empty data volume; changing them later does not change the DB password.
+    password: ""
+    rootPassword: ""
+    # Use a Secret you manage yourself instead (keys: mysql-password, mysql-root-password).
+    existingSecret: ""
+
+  # SQL run once, on first boot of an empty data volume.
+  initdb:
+    enabled: true
+    scripts:
+      01-messages.sql: |
+        CREATE TABLE IF NOT EXISTS messages (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            message TEXT
+        );
+
+  persistence:
+    enabled: true
+    # ""  -> cluster default StorageClass
+    # "-" -> storageClassName: "" (disable dynamic provisioning)
+    storageClass: ""
+    accessMode: ReadWriteOnce
+    size: 1Gi
+    # Static hostPath PV for clusters without a dynamic provisioner (kubeadm).
+    # Requires storageClass to be set to a name such as "manual".
+    hostPath:
+      enabled: false
+      path: /mnt/data/two-tier-mysql
+
+  service:
+    port: 3306
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+  # The mysql entrypoint starts as root, fixes data-dir ownership, then drops to uid 999.
+  podSecurityContext:
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext:
+    allowPrivilegeEscalation: false
+
+  # Gives mysqld time to flush InnoDB on shutdown.
+  terminationGracePeriodSeconds: 60
+
+  startupProbe:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 30
+  readinessProbe:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  livenessProbe:
+    periodSeconds: 20
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Used only when mysql.enabled=false (e.g. Amazon RDS).
+# Credentials come from mysql.auth.username / database and
+# mysql.auth.password or mysql.auth.existingSecret.
+externalDatabase:
+  host: ""
+  port: 3306
+
+# Restrict MySQL ingress to the Flask pods only (needs a CNI that enforces NetworkPolicy).
+networkPolicy:
+  enabled: false
+
+# `helm test` smoke test.
+tests:
+  enabled: true
+  # Also POST a message and read it back. Leaves a "helm-test-<ts>" row in the DB.
+  writeCheck: false

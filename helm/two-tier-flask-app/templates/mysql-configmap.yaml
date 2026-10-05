@@ -1,0 +1,14 @@
+{{- if and .Values.mysql.enabled .Values.mysql.initdb.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "twotier.mysql.fullname" . }}-initdb
+  labels:
+    {{- include "twotier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+data:
+  {{- range $file, $sql := .Values.mysql.initdb.scripts }}
+  {{ $file }}: |
+    {{- $sql | nindent 4 }}
+  {{- end }}
+{{- end }}

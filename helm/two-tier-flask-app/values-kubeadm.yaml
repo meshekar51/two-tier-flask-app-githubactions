@@ -1,0 +1,27 @@
+# Self-managed kubeadm cluster (replaces the old k8s/ manifests).
+#   helm upgrade --install two-tier-flask-app helm/two-tier-flask-app \
+#     -n two-tier --create-namespace -f helm/two-tier-flask-app/values-kubeadm.yaml
+# App URL: http://<node-ip>:30004
+
+flask:
+  replicaCount: 2
+  service:
+    type: NodePort
+    port: 80
+    nodePort: 30004
+
+mysql:
+  persistence:
+    enabled: true
+    # No dynamic provisioner on a bare kubeadm cluster: the chart creates a
+    # static hostPath PV with this class and pre-binds it to the MySQL PVC.
+    storageClass: manual
+    size: 1Gi
+    hostPath:
+      enabled: true
+      path: /home/ubuntu/two-tier-flask-app/mysqldata
+
+  # hostPath data lives on ONE node. On a multi-node cluster pin MySQL to it:
+  # nodeSelector:
+  #   kubernetes.io/hostname: worker-1
+  nodeSelector: {}

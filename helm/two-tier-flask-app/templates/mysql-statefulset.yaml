@@ -1,0 +1,122 @@
+{{- if .Values.mysql.enabled }}
+{{- $probe := list "sh" "-c" "MYSQL_PWD=\"$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent" }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "twotier.mysql.fullname" . }}
+  labels:
+    {{- include "twotier.labels" . | nindent 4 }}
+    app.kubernetes.io/component: database
+spec:
+  serviceName: {{ include "twotier.mysql.fullname" . }}-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "twotier.mysql.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "twotier.mysql.selectorLabels" . | nindent 8 }}
+      annotations:
+        checksum/initdb: {{ toJson .Values.mysql.initdb | sha256sum | trunc 16 }}
+        {{- with .Values.mysql.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "twotier.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.mysql.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml .Values.mysql.podSecurityContext | nindent 8 }}
+      containers:
+        - name: mysql
+          image: "{{ .Values.mysql.image.repository }}:{{ .Values.mysql.image.tag }}"
+          imagePullPolicy: {{ .Values.mysql.image.pullPolicy }}
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "twotier.secretName" . }}
+                  key: mysql-root-password
+            - name: MYSQL_DATABASE
+              value: {{ .Values.mysql.auth.database | quote }}
+            - name: MYSQL_USER
+              value: {{ .Values.mysql.auth.username | quote }}
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "twotier.secretName" . }}
+                  key: mysql-password
+          ports:
+            - name: mysql
+              containerPort: 3306
+              protocol: TCP
+          # TCP to 127.0.0.1 fails while the entrypoint's temporary init server runs
+          # (it uses --skip-networking), so the pod is only Ready once real mysqld is up.
+          startupProbe:
+            exec:
+              command: {{ toJson $probe }}
+            {{- toYaml .Values.mysql.startupProbe | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: {{ toJson $probe }}
+            {{- toYaml .Values.mysql.readinessProbe | nindent 12 }}
+          livenessProbe:
+            exec:
+              command: {{ toJson $probe }}
+            {{- toYaml .Values.mysql.livenessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.mysql.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.mysql.securityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            {{- if .Values.mysql.initdb.enabled }}
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if .Values.mysql.initdb.enabled }}
+        - name: initdb
+          configMap:
+            name: {{ include "twotier.mysql.fullname" . }}-initdb
+        {{- end }}
+        {{- if not .Values.mysql.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.mysql.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mysql.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.mysql.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.mysql.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "twotier.mysql.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          - {{ .Values.mysql.persistence.accessMode }}
+        {{- with (include "twotier.mysql.storageClass" . | trim) }}
+        {{- . | nindent 8 }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.mysql.persistence.size }}
+  {{- end }}
+{{- end }}

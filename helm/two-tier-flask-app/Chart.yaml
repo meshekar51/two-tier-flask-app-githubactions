@@ -1,0 +1,20 @@
+apiVersion: v2
+name: two-tier-flask-app
+description: Two-tier message board - Flask web tier (gunicorn) + MySQL 8.4 data tier
+type: application
+
+# Chart version: bump on every chart change (SemVer).
+version: 0.1.0
+
+# Default image tag when image.tag is empty. CD always overrides it with the
+# immutable sha-<commit> tag + digest of the image it just pushed.
+appVersion: "latest"
+
+kubeVersion: ">=1.27.0-0"
+keywords:
+  - flask
+  - mysql
+  - two-tier
+home: https://github.com/LondheShubham153/two-tier-flask-app
+sources:
+  - https://github.com/LondheShubham153/two-tier-flask-app
