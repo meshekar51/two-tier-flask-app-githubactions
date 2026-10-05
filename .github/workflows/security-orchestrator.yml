@@ -1,0 +1,25 @@
+name: Security Orchestrator
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  secrets:
+    name: Secrets scan
+    uses: ./.github/workflows/security-secrets.yml
+
+  dependency-check:
+    name: Dependency scan
+    needs: secrets
+    uses: ./.github/workflows/security-dependency-check.yml
+
+  sast:
+    name: SAST scan
+    needs: dependency-check
+    uses: ./.github/workflows/security-sast.yml
+
+  container:
+    name: Container scan
+    needs: sast
+    uses: ./.github/workflows/security-container.yml
