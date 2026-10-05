@@ -309,56 +309,56 @@ jobs:
           fi
 
           python - <<'PY'
-import os
-from pathlib import Path
-
-values_file = Path(os.environ["VALUES_FILE"])
-repo = os.environ["IMAGE_REPO"]
-tag = os.environ["IMAGE_TAG"]
-
-text = values_file.read_text()
-
-# Replace image.repository
-text = text.replace(
-    "repository: .*",
-    f"repository: {repo}",
-    1
-) if "repository: .*" in text else text
-
-# Replace image.tag
-text = text.replace(
-    "tag: .*",
-    f"tag: {tag}",
-    1
-) if "tag: .*" in text else text
-
-# Handle YAML block style if present
-if "repository:" in text and "tag:" in text:
-    pass
-
-values_file.write_text(text)
-print(f"Updated {values_file}")
-print(f"repository={repo}")
-print(f"tag={tag}")
-PY
-
-          echo "---- Updated helm values ----"
-          sed -n '1,120p' "$VALUES_FILE"
-
-      - name: Validate helm template renders with updated tag
-        run: |
-          helm template ci "${{ env.CHART_DIR }}" \
-            -f "${{ env.CHART_DIR }}/values-ci.yaml" > /tmp/rendered.yaml
-          grep -n "image:" /tmp/rendered.yaml | head
-
-      - name: Commit updated Helm values
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "${{ env.CHART_DIR }}/values-ci.yaml"
-          git diff --cached --quiet || git commit -m "ci: update Helm image tag"
-          git push
+          import os
+          from pathlib import Path
+          
+          values_file = Path(os.environ["VALUES_FILE"])
+          repo = os.environ["IMAGE_REPO"]
+          tag = os.environ["IMAGE_TAG"]
+          
+          text = values_file.read_text()
+          
+          # Replace image.repository
+          text = text.replace(
+              "repository: .*",
+              f"repository: {repo}",
+              1
+          ) if "repository: .*" in text else text
+          
+          # Replace image.tag
+          text = text.replace(
+              "tag: .*",
+              f"tag: {tag}",
+              1
+          ) if "tag: .*" in text else text
+          
+          # Handle YAML block style if present
+          if "repository:" in text and "tag:" in text:
+              pass
+          
+          values_file.write_text(text)
+          print(f"Updated {values_file}")
+          print(f"repository={repo}")
+          print(f"tag={tag}")
+          PY
+          
+                    echo "---- Updated helm values ----"
+                    sed -n '1,120p' "$VALUES_FILE"
+          
+                - name: Validate helm template renders with updated tag
+                  run: |
+                    helm template ci "${{ env.CHART_DIR }}" \
+                      -f "${{ env.CHART_DIR }}/values-ci.yaml" > /tmp/rendered.yaml
+                    grep -n "image:" /tmp/rendered.yaml | head
+          
+                - name: Commit updated Helm values
+                  if: github.event_name == 'workflow_dispatch'
+                  run: |
+                    git config user.name "github-actions[bot]"
+                    git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+                    git add "${{ env.CHART_DIR }}/values-ci.yaml"
+                    git diff --cached --quiet || git commit -m "ci: update Helm image tag"
+                    git push
 
   ci-complete:
     name: CI gate summary
