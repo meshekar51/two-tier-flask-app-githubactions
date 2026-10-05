@@ -11,7 +11,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main, master]
+    branches: [main]
   workflow_call: # cd.yml runs the same gates on main/master before pushing
   workflow_dispatch:
 
