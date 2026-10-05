@@ -8,13 +8,6 @@
 name: CD
 
 on:
-  push:
-    branches: [main, master]
-    tags: ["v*.*.*"]
-    paths-ignore: # path filters are ignored for tag pushes
-      - "**.md"
-      - "aws/**"
-      - ".github/dependabot.yml"
   workflow_dispatch:
 
 permissions:
