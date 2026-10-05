@@ -1,0 +1,246 @@
+# CI: every pull request, and reused by cd.yml before anything is pushed or deployed.
+#
+#   unit-tests ─┐
+#   helm-lint ──┼─> e2e-kind   (build image -> kind cluster -> helm install -> helm test -> helm upgrade -> helm test)
+#   trivy-fs    │
+#   image-scan  (build image -> Trivy image scan)
+#
+# Replaces the Jenkins stages: Code Clone, Trivy File System Scan, Build, Test.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main, master]
+  workflow_call: # cd.yml runs the same gates on main/master before pushing
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # Only cancel superseded PR runs; never cancel a CI run that a CD run is waiting on.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHON_VERSION: "3.13"
+  HELM_VERSION: v4.3.0
+  KUBECONFORM_VERSION: v0.8.0
+  KUBECONFORM_SHA256: 9bc2bffbf71f261128533edaf912153948b7ff238f9a531ae6d34466ec287883
+  KUBE_VERSION: "1.35.0" # schema version manifests are validated against
+  CHART_DIR: helm/two-tier-flask-app
+  CI_IMAGE: two-tier-flask-app:ci # matches image.repository/tag in values-ci.yaml
+
+jobs:
+  unit-tests:
+    name: Unit tests (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run pytest
+        run: pytest --junitxml=reports/junit.xml
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pytest-report
+          path: reports/junit.xml
+          if-no-files-found: ignore
+          retention-days: 14
+
+  trivy-fs:
+    name: Trivy filesystem scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Dependencies & secrets (fails on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Dockerfile & Helm chart misconfigurations (report only)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          format: table
+          skip-setup-trivy: true
+
+  helm-lint:
+    name: Helm lint & manifest validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/kubeconform.tgz" \
+            "https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          echo "${KUBECONFORM_SHA256}  $RUNNER_TEMP/kubeconform.tgz" | sha256sum -c -
+          sudo tar -xzf "$RUNNER_TEMP/kubeconform.tgz" -C /usr/local/bin kubeconform
+
+      - name: Lint and validate every values overlay
+        run: |
+          set -euo pipefail
+          for values in "" values-kubeadm.yaml values-eks.yaml values-ci.yaml; do
+            args=()
+            if [[ -n "$values" ]]; then args=(-f "$CHART_DIR/$values"); fi
+            echo "::group::${values:-values.yaml (defaults)}"
+            helm lint --strict "$CHART_DIR" "${args[@]}"
+            helm template ci "$CHART_DIR" --namespace ci "${args[@]}" \
+              | kubeconform -strict -summary -kubernetes-version "$KUBE_VERSION"
+            echo "::endgroup::"
+          done
+
+      - name: Validate optional features (ingress, HPA, PDB, external DB)
+        run: |
+          set -euo pipefail
+          helm template ci "$CHART_DIR" \
+            --set flask.ingress.enabled=true \
+            --set flask.autoscaling.enabled=true \
+            --set flask.podDisruptionBudget.enabled=true \
+            | kubeconform -strict -summary -kubernetes-version "$KUBE_VERSION"
+          helm template ci "$CHART_DIR" \
+            --set mysql.enabled=false \
+            --set externalDatabase.host=db.example.com \
+            --set mysql.auth.existingSecret=db-credentials \
+            | kubeconform -strict -summary -kubernetes-version "$KUBE_VERSION"
+
+  image-scan:
+    name: Build image & Trivy image scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image (not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          push: false
+          tags: ${{ env.CI_IMAGE }}
+          cache-from: type=gha,scope=two-tier-flask-app
+          cache-to: type=gha,mode=max,scope=two-tier-flask-app
+
+      - name: Image runs as non-root UID
+        run: |
+          user=$(docker image inspect --format '{{.Config.User}}' "$CI_IMAGE")
+          echo "image USER=$user"
+          [[ "$user" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Image must set a numeric non-root USER"; exit 1; }
+
+      - name: Trivy image scan (fails on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.CI_IMAGE }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+  e2e-kind:
+    name: E2E - Helm on kind + helm test
+    needs: [unit-tests, helm-lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RELEASE: ci
+      NAMESPACE: two-tier
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          push: false
+          tags: ${{ env.CI_IMAGE }}
+          cache-from: type=gha,scope=two-tier-flask-app
+
+      - name: Create kind cluster
+        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          cluster_name: ci
+          wait: 120s
+
+      - name: Load image into kind
+        run: kind load docker-image "$CI_IMAGE" --name ci
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: helm install
+        run: |
+          helm upgrade --install "$RELEASE" "$CHART_DIR" \
+            --namespace "$NAMESPACE" --create-namespace \
+            -f "$CHART_DIR/values-ci.yaml" \
+            --wait=watcher --timeout 10m
+
+      - name: helm test (health + write/read through MySQL)
+        run: helm test "$RELEASE" --namespace "$NAMESPACE" --logs --timeout 5m
+
+      # Second release revision: proves rolling updates work and that the chart
+      # reuses the generated DB passwords instead of rotating them.
+      - name: helm upgrade (rolling restart) + helm test again
+        run: |
+          helm upgrade "$RELEASE" "$CHART_DIR" \
+            --namespace "$NAMESPACE" \
+            -f "$CHART_DIR/values-ci.yaml" \
+            --set-string flask.podAnnotations.ci-run="$GITHUB_RUN_ID" \
+            --wait=watcher --timeout 5m
+          helm test "$RELEASE" --namespace "$NAMESPACE" --logs --timeout 5m
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl -n "$NAMESPACE" get all,pvc,secret,networkpolicy -o wide || true
+          kubectl -n "$NAMESPACE" describe pods || true
+          kubectl -n "$NAMESPACE" logs -l "app.kubernetes.io/instance=$RELEASE" --all-containers --prefix --tail=200 || true
+          kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp || true
