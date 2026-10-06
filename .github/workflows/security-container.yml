@@ -1,5 +1,7 @@
 name: Security - Container Scanning
-
+permissions:
+  contents: read
+  security-events: write
 on:
   workflow_call:
   workflow_dispatch:
