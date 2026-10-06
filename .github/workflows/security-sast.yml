@@ -1,4 +1,4 @@
-name: Sast
+name: Sonar-Sast
 on:
   # Trigger analysis when pushing to your main branches, and when creating a pull request.
   workflow_call: 
@@ -14,3 +14,5 @@ jobs:
         fetch-depth: 0
     - name: SonarQube Scan
       uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
