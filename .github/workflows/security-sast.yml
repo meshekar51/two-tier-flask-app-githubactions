@@ -1,43 +1,16 @@
-name: Security - SAST
-
+name: Sast
 on:
-  workflow_call:
-    inputs:
-      python-version:
-        required: false
-        type: string
-        default: "3.11"
-  workflow_dispatch:
+  # Trigger analysis when pushing to your main branches, and when creating a pull request.
+  workflow_call: 
+  workflow_dispatch: 
 
 jobs:
-  sast:
-    name: Static analysis
+  sonarqube:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ inputs.python-version }}
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Install linting tools
-        run: pip install bandit pylint
-
-      - name: Run Bandit
-        run: bandit -r . -f json -o bandit-report.json || true
-
-      - name: Show Bandit report
-        run: |
-          if [ -f bandit-report.json ]; then
-            cat bandit-report.json
-          fi
-
-      - name: Run Pylint
-        run: pylint app.py --exit-zero || true
+    - uses: actions/checkout@v6
+      with:
+        # Disabling shallow clones is recommended for improving the relevancy of reporting
+        fetch-depth: 0
+    - name: SonarQube Scan
+      uses: SonarSource/sonarqube-scan-action@d209202bc7d53ff1cc128f7f907dac145c9d6ae9
