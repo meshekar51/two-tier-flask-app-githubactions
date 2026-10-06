@@ -61,7 +61,7 @@ jobs:
 
       - name: Update Helm values with new image tag
         run: |
-          sed -i "s/tag: .*/tag: ${{ github.run_number }}/g" helm/values.yaml
+          sed -i "s/tag: .*/tag: ${{ github.run_number }}/g" helm/two-tier-flask-app/values.yaml
           git config --local user.email "meshekar5@gmail.com"
           git config --local user.name "meshekar51"
           git add helm/values.yaml
