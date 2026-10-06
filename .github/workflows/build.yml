@@ -39,6 +39,8 @@ jobs:
     name: Build Docker image
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Add this to allow git push
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
