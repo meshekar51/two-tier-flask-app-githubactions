@@ -1,0 +1,80 @@
+name: Security - Cosign Image Signing
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+
+on:
+  workflow_call:
+    inputs:
+      image-ref:
+        required: true
+        type: string
+        description: The container image reference to sign (e.g., user/repo:tag)
+  workflow_dispatch:
+    inputs:
+      image-ref:
+        description: Container image reference to sign
+        required: true
+        default: "meshekar51/flask-app:latest"
+
+jobs:
+  sign-image:
+    name: Sign container image with Cosign
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: "v2.2.0"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Sign image with Cosign (Keyless)
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          cosign sign --yes "${{ inputs.image-ref }}"
+
+      - name: Verify image signature
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          cosign verify "${{ inputs.image-ref }}" \
+            --certificate-identity-regexp "https://github.com/${{ github.repository }}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+
+      - name: Generate SBOM with Cosign
+        run: |
+          cosign sbom "${{ inputs.image-ref }}" --output json > sbom.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cosign-sbom
+          path: sbom.json
+          retention-days: 30
+
+      - name: Attest image with Cosign
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          cosign attest --yes \
+            --attestation-type slsaprovenance \
+            "${{ inputs.image-ref }}"
+
+      - name: Display image attestations
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          cosign verify-attestation "${{ inputs.image-ref }}" \
+            --certificate-identity-regexp "https://github.com/${{ github.repository }}" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
