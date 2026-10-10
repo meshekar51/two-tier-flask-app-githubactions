@@ -30,9 +30,31 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+  scan:
+    name: Run security scans
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
   build:
     name: Build Docker image
-    needs: test
+    needs: scan
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -78,15 +100,9 @@ jobs:
             git push origin HEAD:${{ github.ref_name }}
           fi
 
-  security:
-    name: Run security checks
-    needs: build
-    uses: ./.github/workflows/security-orchestrator.yml
-    secrets: inherit
-
   sign:
     name: Sign container image
-    needs: security
+    needs: build
     uses: ./.github/workflows/security-cosign.yaml
     with:
       image-ref: ${{ vars.DOCKERHUB_USERNAME }}/flask-app:${{ github.run_number }}
@@ -95,3 +111,9 @@ jobs:
       contents: read
       packages: write
       id-token: write
+
+  security:
+    name: Run security checks
+    needs: sign
+    uses: ./.github/workflows/security-orchestrator.yml
+    secrets: inherit
