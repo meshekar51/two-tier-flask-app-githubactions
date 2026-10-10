@@ -52,9 +52,16 @@ jobs:
         with:
           sarif_file: 'trivy-results.sarif'
 
+  security:
+    name: Run security checks
+    needs: scan
+    uses: ./.github/workflows/security-orchestrator.yml
+    secrets: inherit
+
   build:
     name: Build Docker image
-    needs: scan
+    needs: security
+    if: success()
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -103,6 +110,7 @@ jobs:
   sign:
     name: Sign container image
     needs: build
+    if: success()
     uses: ./.github/workflows/security-cosign.yaml
     with:
       image-ref: ${{ vars.DOCKERHUB_USERNAME }}/flask-app:${{ github.run_number }}
@@ -111,9 +119,3 @@ jobs:
       contents: read
       packages: write
       id-token: write
-
-  security:
-    name: Run security checks
-    needs: sign
-    uses: ./.github/workflows/security-orchestrator.yml
-    secrets: inherit
