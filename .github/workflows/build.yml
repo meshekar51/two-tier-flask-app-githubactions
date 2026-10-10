@@ -1,4 +1,5 @@
 name: Build
+
 on:
   workflow_dispatch:
     inputs:
@@ -6,7 +7,29 @@ on:
         description: Python version for tests
         required: false
         default: "3.11"
+
 jobs:
+  test:
+    name: Run tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest -q
+
   build:
     name: Build Docker image
     needs: test
@@ -15,6 +38,7 @@ jobs:
       contents: write
       packages: write
       id-token: write
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -33,15 +57,23 @@ jobs:
         with:
           context: .
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/flask-app:${{ github.run_number }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/flask-app:${{ github.run_number }}
 
       - name: Update Helm values with new image tag
+        shell: bash
         run: |
-          sed -i "s/tag: .*/tag: ${{ github.run_number }}/g" helm/two-tier-flask-app/values-ci.yaml
+          set -e
+
+          sed -i "s/^  tag:.*/  tag: ${{ github.run_number }}/" helm/two-tier-flask-app/values-ci.yaml
+
           git config --local user.email "meshekar5@gmail.com"
           git config --local user.name "meshekar51"
-          git add helm/two-tier-flask-app/values-ci.yaml
-          git commit -m "Update image tag to ${{ github.run_number }}"
-          git push
 
-
+          if git diff --quiet -- helm/two-tier-flask-app/values-ci.yaml; then
+            echo "No Helm values change required."
+          else
+            git add helm/two-tier-flask-app/values-ci.yaml
+            git commit -m "Update image tag to ${{ github.run_number }}"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
