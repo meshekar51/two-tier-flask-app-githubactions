@@ -1,5 +1,4 @@
 name: Build
-
 on:
   workflow_dispatch:
     inputs:
@@ -7,7 +6,6 @@ on:
         description: Python version for tests
         required: false
         default: "3.11"
-
 jobs:
   security:
     name: Run security checks
@@ -72,13 +70,4 @@ jobs:
           git commit -m "Update image tag to ${{ github.run_number }}"
           git push
 
-  sign:
-    name: Sign container image
-    needs: build
-    uses: ./.github/workflows/security-cosign.yml
-    with:
-      image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/flask-app:${{ github.run_number }}
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
+
