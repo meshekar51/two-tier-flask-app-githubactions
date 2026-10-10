@@ -8,18 +8,22 @@ jobs:
   secrets:
     name: Secrets scan
     uses: ./.github/workflows/security-secrets.yml
+    secrets: inherit
 
   dependency-check:
     name: Dependency scan
     needs: secrets
     uses: ./.github/workflows/security-dependency-check.yml
+    secrets: inherit
 
   sast:
     name: SAST scan
     needs: dependency-check
     uses: ./.github/workflows/security-sast.yml
+    secrets: inherit
 
   container:
     name: Container scan
     needs: sast
     uses: ./.github/workflows/security-container.yml
+    secrets: inherit
