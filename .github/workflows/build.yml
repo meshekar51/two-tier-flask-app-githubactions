@@ -77,3 +77,19 @@ jobs:
             git commit -m "Update image tag to ${{ github.run_number }}"
             git push origin HEAD:${{ github.ref_name }}
           fi
+
+  security:
+    name: Run security checks
+    needs: build
+    uses: ./.github/workflows/security-orchestrator.yml
+
+  sign:
+    name: Sign container image
+    needs: security
+    uses: ./.github/workflows/security-cosign.yaml
+    with:
+      image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/flask-app:${{ github.run_number }}
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
