@@ -82,6 +82,7 @@ jobs:
     name: Run security checks
     needs: build
     uses: ./.github/workflows/security-orchestrator.yml
+    secrets: inherit
 
   sign:
     name: Sign container image
