@@ -88,7 +88,8 @@ jobs:
     needs: security
     uses: ./.github/workflows/security-cosign.yaml
     with:
-      image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/flask-app:${{ github.run_number }}
+      image-ref: ${{ vars.DOCKERHUB_USERNAME }}/flask-app:${{ github.run_number }}
+    secrets: inherit
     permissions:
       contents: read
       packages: write
