@@ -3,7 +3,7 @@
 
 image:
   repository: two-tier-flask-app
-  tag: 27
+  tag: 28
   pullPolicy: Never
 
 flask:
