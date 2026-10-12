@@ -41,6 +41,3 @@ jobs:
         run: |
           cosign sign --yes "${{ inputs.image-ref }}"
 
-      - name: Generate SBOM with Cosign
-        run: |
-          cosign generate sbom "${{ inputs.image-ref }}" --output-file sbom.json
