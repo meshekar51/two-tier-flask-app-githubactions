@@ -27,4 +27,4 @@ spec:
         message: "Flask replicaCount must be 2"
         pattern:
           spec:
-            replicas: 3
+            replicas: 2
