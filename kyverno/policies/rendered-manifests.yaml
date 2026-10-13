@@ -25,4 +25,4 @@ spec:
         pattern:
           metadata:
             labels:
-              nginx: 'chandra'
+              app.kubernetes.io/component: chandra
