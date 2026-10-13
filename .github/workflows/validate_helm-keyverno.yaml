@@ -233,9 +233,14 @@ jobs:
           cp "${REPORT_DIR}/validation.json" "${STAGE}/"
           cp "${REPORT_DIR}/audit-report.md" "${REPORT_DIR}/kyverno-policy-report.json" "${STAGE}/audit/"
 
+          # artifacts are safe in STAGE; clear generated/untracked files
+          # (rendered-manifests.yaml, reports/) so they can't block the branch switch
+          git reset --hard --quiet
+          git clean -fdxq
+
           # check the remote branch, not a local ref
           if git ls-remote --exit-code --heads origin "${VALIDATED_BRANCH}" >/dev/null; then
-            git fetch origin "${VALIDATED_BRANCH}"
+            git fetch origin "+refs/heads/${VALIDATED_BRANCH}:refs/remotes/origin/${VALIDATED_BRANCH}"
             git checkout -B "${VALIDATED_BRANCH}" "origin/${VALIDATED_BRANCH}"
           else
             git checkout --orphan "${VALIDATED_BRANCH}"
@@ -243,7 +248,7 @@ jobs:
 
           # wipe everything so only artifacts remain
           git rm -rf --quiet . || true
-          git clean -fdx
+          git clean -fdxq
 
           cp -r "${STAGE}/." .
           git add -A
