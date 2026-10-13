@@ -31,8 +31,8 @@ metadata:
     helm.sh/resource-policy: keep
 type: Opaque
 data:
-  mysql-password: "aUJ0b2pxY3FWaHBYTXJsNjU4VlNhRHpI"
-  mysql-root-password: "UmlIT0cyUmdocTZlZjdyMkp5VzhxazM5"
+  mysql-password: "T1BUbzFRbFhhZDVnVmVIUlNUSldUbndQ"
+  mysql-root-password: "RlJDOEs5QVQwM3ZXZ2NKTmNjcDI3UWlL"
 ---
 # Source: two-tier-flask-app/templates/mysql-configmap.yaml
 apiVersion: v1
