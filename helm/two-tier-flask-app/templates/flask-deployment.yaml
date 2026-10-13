@@ -5,7 +5,7 @@ metadata:
   name: {{ include "twotier.fullname" . }}
   labels:
     {{- include "twotier.labels" . | nindent 4 }}
-    app.kubernetes.io/component: chandra
+    app.kubernetes.io/component: web
 spec:
   {{- if not .Values.flask.autoscaling.enabled }}
   replicas: {{ .Values.flask.replicaCount }}
