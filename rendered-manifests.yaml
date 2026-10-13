@@ -1,0 +1,469 @@
+---
+# Source: two-tier-flask-app/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-two-tier-flask-app
+  labels:
+    helm.sh/chart: two-tier-flask-app-0.1.0
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: two-tier-flask-app
+automountServiceAccountToken: false
+---
+# Source: two-tier-flask-app/templates/mysql-secret.yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-two-tier-flask-app-mysql
+  labels:
+    helm.sh/chart: two-tier-flask-app-0.1.0
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: two-tier-flask-app
+    app.kubernetes.io/component: database
+  annotations:
+    # The MySQL PVC outlives `helm uninstall`; keep its credentials with it.
+    helm.sh/resource-policy: keep
+type: Opaque
+data:
+  mysql-password: "b2VjT3VtTzF6MWpqQUNJMG4wVTloMVRT"
+  mysql-root-password: "a055ZGl5V3RHeHVrZWp2c2xkbEYxRDlq"
+---
+# Source: two-tier-flask-app/templates/mysql-configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-two-tier-flask-app-mysql-initdb
+  labels:
+    helm.sh/chart: two-tier-flask-app-0.1.0
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: two-tier-flask-app
+    app.kubernetes.io/component: database
+data:
+  01-messages.sql: |
+    CREATE TABLE IF NOT EXISTS messages (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        message TEXT
+    );
+---
+# Source: two-tier-flask-app/templates/flask-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-two-tier-flask-app
+  labels:
+    helm.sh/chart: two-tier-flask-app-0.1.0
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: two-tier-flask-app
+    app.kubernetes.io/component: web
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/component: web
+---
+# Source: two-tier-flask-app/templates/mysql-service.yaml
+# ClusterIP Service the web tier connects to (MYSQL_HOST).
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-two-tier-flask-app-mysql
+  labels:
+    helm.sh/chart: two-tier-flask-app-0.1.0
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: two-tier-flask-app
+    app.kubernetes.io/component: database
+spec:
+  type: ClusterIP
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/component: database
+---
+# Source: two-tier-flask-app/templates/mysql-service.yaml
+# Headless governing Service required by the StatefulSet (stable pod DNS).
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-two-tier-flask-app-mysql-headless
+  labels:
+    helm.sh/chart: two-tier-flask-app-0.1.0
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: two-tier-flask-app
+    app.kubernetes.io/component: database
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: mysql
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/component: database
+---
+# Source: two-tier-flask-app/templates/flask-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-two-tier-flask-app
+  labels:
+    helm.sh/chart: two-tier-flask-app-0.1.0
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: two-tier-flask-app
+    app.kubernetes.io/component: chandra
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: two-tier-flask-app
+      app.kubernetes.io/instance: app
+      app.kubernetes.io/component: web
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: two-tier-flask-app
+        app.kubernetes.io/instance: app
+        app.kubernetes.io/component: web
+    spec:
+      serviceAccountName: app-two-tier-flask-app
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 10001
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: wait-for-db
+          image: "trainwithshubham/two-tier-flask-app:latest"
+          imagePullPolicy: IfNotPresent
+          # Reuses the app image (it already has Python), so no extra image to pull or scan.
+          command:
+            - python
+            - -c
+            - |
+              import os, socket, time
+              host, port = os.environ["MYSQL_HOST"], int(os.environ["MYSQL_PORT"])
+              while True:
+                  try:
+                      socket.create_connection((host, port), timeout=2).close()
+                      print(f"{host}:{port} is accepting connections", flush=True)
+                      break
+                  except OSError as err:
+                      print(f"waiting for {host}:{port} ({err})", flush=True)
+                      time.sleep(3)
+          env:
+            - name: MYSQL_HOST
+              value: "app-two-tier-flask-app-mysql"
+            - name: MYSQL_PORT
+              value: "3306"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+      containers:
+        - name: flask
+          image: "trainwithshubham/two-tier-flask-app:latest"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          env:
+            - name: MYSQL_HOST
+              value: "app-two-tier-flask-app-mysql"
+            - name: MYSQL_PORT
+              value: "3306"
+            - name: MYSQL_USER
+              value: "admin"
+            - name: MYSQL_DB
+              value: "devops"
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-two-tier-flask-app-mysql
+                  key: mysql-password
+            # Root filesystem is read-only: keep gunicorn's control socket and Python bytecode off it.
+            - name: XDG_RUNTIME_DIR
+              value: /tmp
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+          resources:
+            limits:
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+---
+# Source: two-tier-flask-app/templates/mysql-statefulset.yaml
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: app-two-tier-flask-app-mysql
+  labels:
+    helm.sh/chart: two-tier-flask-app-0.1.0
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: two-tier-flask-app
+    app.kubernetes.io/component: database
+spec:
+  serviceName: app-two-tier-flask-app-mysql-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: two-tier-flask-app
+      app.kubernetes.io/instance: app
+      app.kubernetes.io/component: database
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: two-tier-flask-app
+        app.kubernetes.io/instance: app
+        app.kubernetes.io/component: database
+      annotations:
+        checksum/initdb: 09b80d8981e2ab7b
+    spec:
+      serviceAccountName: app-two-tier-flask-app
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mysql
+          image: "mysql:8.4"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-two-tier-flask-app-mysql
+                  key: mysql-root-password
+            - name: MYSQL_DATABASE
+              value: "devops"
+            - name: MYSQL_USER
+              value: "admin"
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-two-tier-flask-app-mysql
+                  key: mysql-password
+          ports:
+            - name: mysql
+              containerPort: 3306
+              protocol: TCP
+          # TCP to 127.0.0.1 fails while the entrypoint's temporary init server runs
+          # (it uses --skip-networking), so the pod is only Ready once real mysqld is up.
+          startupProbe:
+            exec:
+              command: ["sh","-c","MYSQL_PWD=\"$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+            failureThreshold: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command: ["sh","-c","MYSQL_PWD=\"$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+            failureThreshold: 3
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh","-c","MYSQL_PWD=\"$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+            failureThreshold: 6
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            limits:
+              memory: 1Gi
+            requests:
+              cpu: 100m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+            - name: initdb
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+      volumes:
+        - name: initdb
+          configMap:
+            name: app-two-tier-flask-app-mysql-initdb
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: two-tier-flask-app
+          app.kubernetes.io/instance: app
+          app.kubernetes.io/component: database
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: 1Gi
+---
+# Source: two-tier-flask-app/templates/tests/test-smoke.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-two-tier-flask-app-smoke-test
+  labels:
+    helm.sh/chart: two-tier-flask-app-0.1.0
+    app.kubernetes.io/name: two-tier-flask-app
+    app.kubernetes.io/instance: app
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/part-of: two-tier-flask-app
+    app.kubernetes.io/component: test
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    fsGroup: 10001
+    runAsGroup: 10001
+    runAsNonRoot: true
+    runAsUser: 10001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: smoke-test
+      image: "trainwithshubham/two-tier-flask-app:latest"
+      imagePullPolicy: IfNotPresent
+      env:
+        - name: BASE_URL
+          value: "http://app-two-tier-flask-app:80"
+        - name: WRITE_CHECK
+          value: "false"
+      command:
+        - python
+        - -c
+        - |
+          import os, sys, time, urllib.error, urllib.parse, urllib.request
+
+          base = os.environ["BASE_URL"]
+
+          def call(path, data=None, attempts=5):
+              for i in range(1, attempts + 1):
+                  try:
+                      with urllib.request.urlopen(base + path, data=data, timeout=10) as r:
+                          return r.status, r.read().decode()
+                  except (urllib.error.URLError, OSError) as err:
+                      print(f"  attempt {i}/{attempts} {path}: {err}", flush=True)
+                      time.sleep(3)
+              return None, ""
+
+          def check(name, ok):
+              print(("PASS  " if ok else "FAIL  ") + name, flush=True)
+              if not ok:
+                  sys.exit(1)
+
+          status, _ = call("/health")
+          check("GET /health returns 200", status == 200)
+
+          status, _ = call("/")
+          check("GET / returns 200 (reads messages from MySQL)", status == 200)
+
+          if os.environ.get("WRITE_CHECK") == "true":
+              msg = f"helm-test-{int(time.time())}"
+              status, _ = call("/submit", data=urllib.parse.urlencode({"new_message": msg}).encode(), attempts=1)
+              check("POST /submit returns 200 (writes to MySQL)", status == 200)
+              status, body = call("/")
+              check("submitted message is read back from MySQL", msg in body)
+
+          print("all smoke tests passed", flush=True)
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+          - ALL
+        readOnlyRootFilesystem: true
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          memory: 64Mi

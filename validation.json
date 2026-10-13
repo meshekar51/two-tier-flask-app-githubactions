@@ -1,0 +1,6 @@
+{
+  "source_branch": "main",
+  "source_sha": "94b2303f0d64186d1fff86f8a29c91c00b63ee7d",
+  "validated_at": "2026-10-13T08:21:42Z",
+  "chart_path": "./helm/two-tier-flask-app"
+}
