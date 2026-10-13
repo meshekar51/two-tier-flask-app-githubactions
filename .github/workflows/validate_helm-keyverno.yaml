@@ -19,6 +19,7 @@ jobs:
       CHART_PATH: ./helm/two-tier-flask-app
       VALIDATED_BRANCH: validated
       KYVERNO_POLICY_DIR: ./kyverno/policies
+      KYVERNO_IMAGE: ghcr.io/kyverno/kyverno-cli:latest   # pin to a release tag when you can
 
     steps:
       - name: Checkout repository
@@ -46,8 +47,10 @@ jobs:
           docker run --rm \
             -v "${{ github.workspace }}:/work" \
             -w /work \
-            ghcr.io/kyverno/kyverno-cli:latest \
-            validate "${KYVERNO_POLICY_DIR}" -f rendered-manifests.yaml
+            "${KYVERNO_IMAGE}" \
+            apply "${KYVERNO_POLICY_DIR}" \
+            --resource rendered-manifests.yaml \
+            --detailed-results
 
       - name: Publish validated manifests to branch
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -55,11 +58,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          mkdir -p validated-artifacts
-          cp rendered-manifests.yaml validated-artifacts/rendered-manifests.yaml
-
-          # create validation metadata for Argo to use later if needed
-          cat > validated-artifacts/validation.json <<EOF
+          # stage artifacts outside the repo
+          mkdir -p /tmp/validated
+          cp rendered-manifests.yaml /tmp/validated/
+          cat > /tmp/validated/validation.json <<EOF
           {
             "source_branch": "main",
             "source_sha": "${{ github.sha }}",
@@ -68,16 +70,19 @@ jobs:
           }
           EOF
 
-          if git show-ref --verify --quiet refs/heads/"${VALIDATED_BRANCH}"; then
-            git checkout "${VALIDATED_BRANCH}"
-            git rm -rf . || true
+          # check the remote branch, not a local ref
+          if git ls-remote --exit-code --heads origin "${VALIDATED_BRANCH}" >/dev/null; then
+            git fetch origin "${VALIDATED_BRANCH}"
+            git checkout -B "${VALIDATED_BRANCH}" "origin/${VALIDATED_BRANCH}"
           else
             git checkout --orphan "${VALIDATED_BRANCH}"
           fi
 
-          cp -r validated-artifacts/* .
+          # wipe everything so only artifacts remain
+          git rm -rf --quiet . || true
+          git clean -fdx
+
+          cp /tmp/validated/* .
           git add -A
-
           git commit -m "Validated manifests for ${{ github.sha }}" || echo "No changes to commit"
-
-          git push origin HEAD:"${VALIDATED_BRANCH}" --force
+          git push origin HEAD:"${VALIDATED_BRANCH}"
