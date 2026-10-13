@@ -19,7 +19,7 @@ jobs:
       CHART_PATH: ./helm/two-tier-flask-app
       VALIDATED_BRANCH: validated
       KYVERNO_POLICY_DIR: ./kyverno/policies
-      KYVERNO_IMAGE: ghcr.io/kyverno/kyverno-cli:latest   # pin to a release tag when you can
+      KYVERNO_IMAGE: ghcr.io/kyverno/kyverno-cli:v1.19.1   # pin to a release tag when you can
 
     steps:
       - name: Checkout repository
