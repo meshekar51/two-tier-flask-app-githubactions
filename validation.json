@@ -1,6 +1,31 @@
 {
-  "source_branch": "main",
-  "source_sha": "94b2303f0d64186d1fff86f8a29c91c00b63ee7d",
-  "validated_at": "2026-10-13T08:21:42Z",
-  "chart_path": "./helm/two-tier-flask-app"
+  "result": "PASSED",
+  "repository": "meshekar51/two-tier-flask-app-githubactions",
+  "event": "push",
+  "ref": "main",
+  "source_sha": "78f0c198029d41e65dc265164677099ad68d4e69",
+  "pr_head_sha": null,
+  "triggered_by": "meshekar51",
+  "run_url": "https://github.com/meshekar51/two-tier-flask-app-githubactions/actions/runs/38369987456/attempts/1",
+  "validated_at": "2026-10-13T08:33:06Z",
+  "kyverno_image": "ghcr.io/kyverno/kyverno-cli@sha256:ced7b2be0b04250cabfe695f15307f69eb715fe23234816388af4f3812915b2a",
+  "chart_path": "./helm/two-tier-flask-app",
+  "rendered_manifests": {
+    "file": "rendered-manifests.yaml",
+    "sha256": "f9c305ef5ad90c8676d9f2b12ea2894bf5dd3e39cef6e5f1d0cc4b78ddbed5a3",
+    "resource_count": 9
+  },
+  "policies": [
+    {
+      "file": "./kyverno/policies/rendered-manifests.yaml",
+      "sha256": "163f1784e334e083775895dc939e5e63a19ddd28ee3eb5db678c70b3bc436416"
+    }
+  ],
+  "summary": {
+    "pass": 1,
+    "fail": 0,
+    "warn": 0,
+    "error": 0,
+    "skip": 0
+  }
 }

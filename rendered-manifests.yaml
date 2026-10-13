@@ -31,8 +31,8 @@ metadata:
     helm.sh/resource-policy: keep
 type: Opaque
 data:
-  mysql-password: "b2VjT3VtTzF6MWpqQUNJMG4wVTloMVRT"
-  mysql-root-password: "a055ZGl5V3RHeHVrZWp2c2xkbEYxRDlq"
+  mysql-password: "aUJ0b2pxY3FWaHBYTXJsNjU4VlNhRHpI"
+  mysql-root-password: "UmlIT0cyUmdocTZlZjdyMkp5VzhxazM5"
 ---
 # Source: two-tier-flask-app/templates/mysql-configmap.yaml
 apiVersion: v1
@@ -144,7 +144,7 @@ metadata:
     app.kubernetes.io/version: "latest"
     app.kubernetes.io/managed-by: Helm
     app.kubernetes.io/part-of: two-tier-flask-app
-    app.kubernetes.io/component: chandra
+    app.kubernetes.io/component: web
 spec:
   replicas: 2
   revisionHistoryLimit: 5
