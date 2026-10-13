@@ -14,15 +14,17 @@ spec:
   validationFailureAction: Enforce
   background: true
   rules:
-    - name: check-for-labels
+    - name: check-for-flask-replicas
       match:
         any:
           - resources:
               kinds:
-                - Pod
+                - Deployment
+              selector:
+                matchLabels:
+                  app.kubernetes.io/component: web
       validate:
-        message: The label `app.kubernetes.io/name` is required.
+        message: "Flask replicaCount must be 2"
         pattern:
-          metadata:
-            labels:
-              app.kubernetes.io/component: chandra
+          spec:
+            replicas: 2
