@@ -19,7 +19,7 @@ jobs:
       CHART_PATH: ./helm/two-tier-flask-app
       VALIDATED_BRANCH: validated
       KYVERNO_POLICY_DIR: ./kyverno/policies
-      KYVERNO_IMAGE: ghcr.io/kyverno/kyverno-cli:v1.19.1   # pin to a release tag when you can
+      KYVERNO_IMAGE: ghcr.io/kyverno/kyverno-cli:v1.19.1
 
     steps:
       - name: Checkout repository
@@ -43,34 +43,104 @@ jobs:
           wc -l rendered-manifests.yaml
 
       - name: Validate rendered manifests with Kyverno
+        id: kyverno
+        continue-on-error: true
         run: |
+          mkdir -p reports
+          set +e
           docker run --rm \
             -v "${{ github.workspace }}:/work" \
             -w /work \
             "${KYVERNO_IMAGE}" \
             apply "${KYVERNO_POLICY_DIR}" \
             --resource rendered-manifests.yaml \
-            --detailed-results
+            --detailed-results 2>&1 | tee reports/kyverno-validation.log
+          status=${PIPESTATUS[0]}
+          echo "KYVERNO_EXIT_CODE=${status}" >> "${GITHUB_ENV}"
+          echo "kyverno_exit_code=${status}" >> "${GITHUB_OUTPUT}"
+          set -e
+          exit 0
+
+      - name: Generate validation report
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          status = os.environ.get("KYVERNO_EXIT_CODE", "0")
+          report = {
+              "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+              "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+              "run_number": os.environ.get("GITHUB_RUN_NUMBER", ""),
+              "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+              "event_name": os.environ.get("GITHUB_EVENT_NAME", ""),
+              "ref": os.environ.get("GITHUB_REF", ""),
+              "sha": os.environ.get("GITHUB_SHA", ""),
+              "actor": os.environ.get("GITHUB_ACTOR", ""),
+              "validated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "chart_path": os.environ.get("CHART_PATH", ""),
+              "policy_dir": os.environ.get("KYVERNO_POLICY_DIR", ""),
+              "kyverno_image": os.environ.get("KYVERNO_IMAGE", ""),
+              "status": "passed" if status == "0" else "failed",
+              "exit_code": int(status),
+              "log_file": "reports/kyverno-validation.log",
+          }
+
+          log_path = Path("reports/kyverno-validation.log")
+          if log_path.exists():
+              report["log_excerpt"] = log_path.read_text(encoding="utf-8", errors="replace")[-12000:]
+
+          report_path = Path("reports/validation-report.json")
+          report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+          print(json.dumps(report, indent=2))
+          PY
+
+          if [ "${KYVERNO_EXIT_CODE:-0}" != "0" ]; then
+            echo "Kyverno validation failed. Audit report generated at reports/validation-report.json"
+            exit 1
+          fi
+
+      - name: Upload validation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kyverno-validation-report
+          path: |
+            reports/kyverno-validation.log
+            reports/validation-report.json
+          if-no-files-found: warn
 
       - name: Publish validated manifests to branch
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && env.KYVERNO_EXIT_CODE == '0'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # stage artifacts outside the repo
           mkdir -p /tmp/validated
           cp rendered-manifests.yaml /tmp/validated/
+
+          if [ -f reports/validation-report.json ]; then
+            cp reports/validation-report.json /tmp/validated/
+          fi
+
+          if [ -f reports/kyverno-validation.log ]; then
+            cp reports/kyverno-validation.log /tmp/validated/
+          fi
+
           cat > /tmp/validated/validation.json <<EOF
           {
             "source_branch": "main",
             "source_sha": "${{ github.sha }}",
             "validated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "chart_path": "${CHART_PATH}"
+            "chart_path": "${CHART_PATH}",
+            "status": "passed",
+            "kyverno_exit_code": "${KYVERNO_EXIT_CODE}"
           }
           EOF
 
-          # check the remote branch, not a local ref
           if git ls-remote --exit-code --heads origin "${VALIDATED_BRANCH}" >/dev/null; then
             git fetch origin "${VALIDATED_BRANCH}"
             git checkout -B "${VALIDATED_BRANCH}" "origin/${VALIDATED_BRANCH}"
@@ -78,7 +148,6 @@ jobs:
             git checkout --orphan "${VALIDATED_BRANCH}"
           fi
 
-          # wipe everything so only artifacts remain
           git rm -rf --quiet . || true
           git clean -fdx
 
