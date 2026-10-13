@@ -4,7 +4,6 @@ permissions:
   security-events: write
 on:
   workflow_call:
-  workflow_dispatch:
 
 jobs:
   container-scan:
