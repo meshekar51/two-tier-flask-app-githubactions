@@ -19,7 +19,10 @@ jobs:
       CHART_PATH: ./helm/two-tier-flask-app
       VALIDATED_BRANCH: validated
       KYVERNO_POLICY_DIR: ./kyverno/policies
-      KYVERNO_IMAGE: ghcr.io/kyverno/kyverno-cli:v1.19.1   # pin to a release tag when you can
+      # tag + digest = the exact CLI build is recorded and reproducible for audit
+      KYVERNO_IMAGE: ghcr.io/kyverno/kyverno-cli:v1.19.1@sha256:ced7b2be0b04250cabfe695f15307f69eb715fe23234816388af4f3812915b2a
+      REPORT_DIR: reports
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
 
     steps:
       - name: Checkout repository
@@ -42,15 +45,179 @@ jobs:
           ls -lh rendered-manifests.yaml
           wc -l rendered-manifests.yaml
 
+      # Runs the policies and captures the result. Never fails on its own,
+      # so the audit report is always produced; the gate step below enforces.
       - name: Validate rendered manifests with Kyverno
+        id: kyverno
         run: |
+          mkdir -p "${REPORT_DIR}"
+
+          set +e
           docker run --rm \
             -v "${{ github.workspace }}:/work" \
             -w /work \
             "${KYVERNO_IMAGE}" \
             apply "${KYVERNO_POLICY_DIR}" \
             --resource rendered-manifests.yaml \
-            --detailed-results
+            --policy-report \
+            --output-format json \
+            > "${REPORT_DIR}/kyverno-stdout.log" \
+            2> "${REPORT_DIR}/kyverno-stderr.log"
+          rc=$?
+          set -e
+
+          echo "exit_code=${rc}" >> "$GITHUB_OUTPUT"
+
+          # the report is a single JSON line; deprecation warnings also land on stdout
+          grep -m1 '^{' "${REPORT_DIR}/kyverno-stdout.log" > "${REPORT_DIR}/kyverno-policy-report.json" || true
+
+          echo "Kyverno exit code: ${rc}"
+          grep -v '^{' "${REPORT_DIR}/kyverno-stdout.log" || true
+          if jq -e . "${REPORT_DIR}/kyverno-policy-report.json" >/dev/null 2>&1; then
+            jq -r '.summary | "pass: \(.pass), fail: \(.fail), warn: \(.warn), error: \(.error), skip: \(.skip)"' \
+              "${REPORT_DIR}/kyverno-policy-report.json"
+            jq -r '.results[] | select(.result != "pass")
+                   | "\(.result | ascii_upcase): \(.policy) -> \(.resources | map("\(.kind)/\(.name)") | join(", ")): \(.message)"' \
+              "${REPORT_DIR}/kyverno-policy-report.json"
+          else
+            echo "::warning::Kyverno produced no policy report"
+            cat "${REPORT_DIR}/kyverno-stderr.log"
+          fi
+
+      - name: Build audit report
+        if: always()
+        env:
+          KYVERNO_EXIT_CODE: ${{ steps.kyverno.outputs.exit_code }}
+        run: |
+          mkdir -p "${REPORT_DIR}"
+          REPORT_JSON="${REPORT_DIR}/kyverno-policy-report.json"
+          REPORT_MD="${REPORT_DIR}/audit-report.md"
+          GENERATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          RUN_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}"
+          IMAGE_DIGEST="$(docker image inspect --format '{{index .RepoDigests 0}}' "${KYVERNO_IMAGE}" 2>/dev/null || echo "${KYVERNO_IMAGE}")"
+          MANIFEST_SHA="$(sha256sum rendered-manifests.yaml 2>/dev/null | cut -d' ' -f1 || true)"
+          RESOURCE_COUNT="$(grep -c '^kind:' rendered-manifests.yaml 2>/dev/null || echo 0)"
+
+          if jq -e '.summary' "${REPORT_JSON}" >/dev/null 2>&1; then
+            SUMMARY="$(jq -c '.summary' "${REPORT_JSON}")"
+            if [ "${KYVERNO_EXIT_CODE}" = "0" ]; then RESULT="PASSED"; else RESULT="FAILED"; fi
+          else
+            SUMMARY='{"pass":0,"fail":0,"warn":0,"error":1,"skip":0}'
+            RESULT="ERROR"
+            echo '{"summary":'"${SUMMARY}"',"results":[]}' > "${REPORT_JSON}"
+          fi
+
+          # policy files with hashes, so auditors can prove which version was enforced
+          POLICIES="$(find "${KYVERNO_POLICY_DIR}" -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 \
+            | sort -z | xargs -0 -r sha256sum \
+            | jq -R -s -c 'split("\n") | map(select(length > 0) | split("  ") | {file: .[1], sha256: .[0]})')"
+
+          # machine-readable record (published to the validated branch for Argo / auditors)
+          jq -n \
+            --arg result "${RESULT}" \
+            --arg repository "${GITHUB_REPOSITORY}" \
+            --arg event "${GITHUB_EVENT_NAME}" \
+            --arg ref "${GITHUB_REF_NAME}" \
+            --arg sha "${GITHUB_SHA}" \
+            --arg pr_head_sha "${PR_HEAD_SHA}" \
+            --arg actor "${GITHUB_ACTOR}" \
+            --arg run_url "${RUN_URL}" \
+            --arg generated_at "${GENERATED_AT}" \
+            --arg kyverno_image "${IMAGE_DIGEST}" \
+            --arg chart_path "${CHART_PATH}" \
+            --arg manifest_sha256 "${MANIFEST_SHA}" \
+            --argjson resource_count "${RESOURCE_COUNT}" \
+            --argjson summary "${SUMMARY}" \
+            --argjson policies "${POLICIES}" \
+            '{
+               result: $result,
+               repository: $repository,
+               event: $event,
+               ref: $ref,
+               source_sha: $sha,
+               pr_head_sha: (if $pr_head_sha == "" then null else $pr_head_sha end),
+               triggered_by: $actor,
+               run_url: $run_url,
+               validated_at: $generated_at,
+               kyverno_image: $kyverno_image,
+               chart_path: $chart_path,
+               rendered_manifests: {file: "rendered-manifests.yaml", sha256: $manifest_sha256, resource_count: $resource_count},
+               policies: $policies,
+               summary: $summary
+             }' > "${REPORT_DIR}/validation.json"
+
+          # human-readable report
+          {
+            echo "# Kyverno Policy Validation - Audit Report"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| **Result** | **${RESULT}** |"
+            echo "| Repository | \`${GITHUB_REPOSITORY}\` |"
+            echo "| Event | ${GITHUB_EVENT_NAME} |"
+            echo "| Ref | \`${GITHUB_REF_NAME}\` |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            if [ -n "${PR_HEAD_SHA}" ]; then echo "| PR head commit | \`${PR_HEAD_SHA}\` |"; fi
+            echo "| Triggered by | ${GITHUB_ACTOR} |"
+            echo "| Workflow run | ${RUN_URL} |"
+            echo "| Generated (UTC) | ${GENERATED_AT} |"
+            echo "| Kyverno CLI | \`${IMAGE_DIGEST}\` |"
+            echo "| Chart | \`${CHART_PATH}\` |"
+            echo "| Rendered manifests | ${RESOURCE_COUNT} resources, sha256 \`${MANIFEST_SHA}\` |"
+            echo
+            echo "## Summary"
+            echo
+            echo "| Pass | Fail | Warn | Error | Skip |"
+            echo "|---|---|---|---|---|"
+            echo "${SUMMARY}" | jq -r '"| \(.pass) | \(.fail) | \(.warn) | \(.error) | \(.skip) |"'
+            echo
+            echo "## Policies evaluated"
+            echo
+            echo "| File | SHA-256 |"
+            echo "|---|---|"
+            echo "${POLICIES}" | jq -r '.[] | "| `\(.file)` | `\(.sha256)` |"'
+            echo
+            echo "## Findings"
+            echo
+            if [ "${RESULT}" = "ERROR" ]; then
+              echo "Kyverno did not produce a policy report. See \`kyverno-stderr.log\` in the run artifacts."
+            elif [ "$(jq '.results | length' "${REPORT_JSON}")" = "0" ]; then
+              echo "No policy matched any rendered resource."
+            else
+              echo "| Result | Policy | Rule | Resource | Message |"
+              echo "|---|---|---|---|---|"
+              jq -r '
+                def cell: tostring | gsub("[\r\n]+"; " ") | gsub("\\|"; "\\|");
+                .results
+                | sort_by(.result == "pass", .policy)
+                | .[]
+                | "| \(.result | ascii_upcase) | \(.policy | cell) | \((.rule // "-") | cell) | \(.resources | map("\(.kind)/\(.namespace // "-")/\(.name)") | join("<br>") | cell) | \((.message // "") | cell) |"
+              ' "${REPORT_JSON}"
+            fi
+          } > "${REPORT_MD}"
+
+          cat "${REPORT_MD}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kyverno-audit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/
+            rendered-manifests.yaml
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Enforce Kyverno policy gate
+        env:
+          KYVERNO_EXIT_CODE: ${{ steps.kyverno.outputs.exit_code }}
+        run: |
+          if [ "${KYVERNO_EXIT_CODE}" != "0" ]; then
+            echo "::error::Kyverno policy validation failed (exit ${KYVERNO_EXIT_CODE:-unknown}). See the audit report in the job summary."
+            exit 1
+          fi
+          echo "All Kyverno policies passed."
 
       - name: Publish validated manifests to branch
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -59,16 +226,12 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # stage artifacts outside the repo
-          mkdir -p /tmp/validated
-          cp rendered-manifests.yaml /tmp/validated/
-          cat > /tmp/validated/validation.json <<EOF
-          {
-            "source_branch": "main",
-            "source_sha": "${{ github.sha }}",
-            "validated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "chart_path": "${CHART_PATH}"
-          }
-          EOF
+          STAGE="${RUNNER_TEMP}/validated"
+          rm -rf "${STAGE}"
+          mkdir -p "${STAGE}/audit"
+          cp rendered-manifests.yaml "${STAGE}/"
+          cp "${REPORT_DIR}/validation.json" "${STAGE}/"
+          cp "${REPORT_DIR}/audit-report.md" "${REPORT_DIR}/kyverno-policy-report.json" "${STAGE}/audit/"
 
           # check the remote branch, not a local ref
           if git ls-remote --exit-code --heads origin "${VALIDATED_BRANCH}" >/dev/null; then
@@ -82,7 +245,10 @@ jobs:
           git rm -rf --quiet . || true
           git clean -fdx
 
-          cp /tmp/validated/* .
+          cp -r "${STAGE}/." .
           git add -A
-          git commit -m "Validated manifests for ${{ github.sha }}" || echo "No changes to commit"
+          git commit -m "Validated manifests for ${GITHUB_SHA}" \
+            -m "Kyverno: $(jq -r '.summary | "pass=\(.pass) fail=\(.fail) warn=\(.warn) error=\(.error) skip=\(.skip)"' validation.json)" \
+            -m "Run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            || echo "No changes to commit"
           git push origin HEAD:"${VALIDATED_BRANCH}"
