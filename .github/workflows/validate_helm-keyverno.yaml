@@ -1,0 +1,83 @@
+name: Validate Helm with Kyverno and Publish Validated Artifacts
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch: 
+
+permissions:
+  contents: write
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-latest
+    env:
+      CHART_PATH: ./helm/two-tier-flask-app
+      VALIDATED_BRANCH: validated
+      KYVERNO_POLICY_DIR: ./kyverno/policies
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.15.4
+
+      - name: Render Helm manifests
+        run: |
+          helm template app "${CHART_PATH}" \
+            -f "${CHART_PATH}/values.yaml" > rendered-manifests.yaml
+
+      - name: Show rendered output
+        run: |
+          ls -lh rendered-manifests.yaml
+          wc -l rendered-manifests.yaml
+
+      - name: Validate rendered manifests with Kyverno
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/work" \
+            -w /work \
+            ghcr.io/kyverno/kyverno-cli:latest \
+            kyverno validate "${KYVERNO_POLICY_DIR}" -f rendered-manifests.yaml
+
+      - name: Publish validated manifests to branch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          mkdir -p validated-artifacts
+          cp rendered-manifests.yaml validated-artifacts/rendered-manifests.yaml
+
+          # create validation metadata for Argo to use later if needed
+          cat > validated-artifacts/validation.json <<EOF
+          {
+            "source_branch": "main",
+            "source_sha": "${{ github.sha }}",
+            "validated_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "chart_path": "${CHART_PATH}"
+          }
+          EOF
+
+          if git show-ref --verify --quiet refs/heads/"${VALIDATED_BRANCH}"; then
+            git checkout "${VALIDATED_BRANCH}"
+            git rm -rf . || true
+          else
+            git checkout --orphan "${VALIDATED_BRANCH}"
+          fi
+
+          cp -r validated-artifacts/* .
+          git add -A
+
+          git commit -m "Validated manifests for ${{ github.sha }}" || echo "No changes to commit"
+
+          git push origin HEAD:"${VALIDATED_BRANCH}" --force
